@@ -161,7 +161,7 @@ public class ExportExcelFunction
 
         foreach (var docType in allDocs)
         {
-            var ws = wb.Worksheets.Add(docType);
+            var ws = wb.Worksheets.Add(docType.ToUpper());
 
             ws.Cell(1, 1).Value = "Campo";
             ws.Cell(1, 1).Style.Font.Bold = true;
