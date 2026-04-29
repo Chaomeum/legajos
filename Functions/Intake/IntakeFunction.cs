@@ -71,8 +71,8 @@ public class IntakeFunction
             var storageConnectionString = _configuration["AzureWebJobsStorage"];
             var legajosStorageConnectionString = _configuration["LegajosStorageConnectionString"];
 
-            var configTableName = _configuration["ConfigMappingTableName"] ?? "configmapping";
-            var stateTableName = _configuration["DocumentStateTableName"] ?? "documentState";
+            var configTableName = _configuration["ConfigMappingTableName"] ?? "ConfigMapping";
+            var stateTableName = _configuration["DocumentStateTableName"] ?? "DocumentState";
             var docIntelEndpoint = _configuration["DocumentIntelligence:Endpoint"];
             var docIntelApiKey = _configuration["DocumentIntelligence:ApiKey"];
 
