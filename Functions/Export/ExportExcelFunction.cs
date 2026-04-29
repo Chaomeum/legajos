@@ -73,9 +73,11 @@ public class ExportExcelFunction
     }
 
     // ---------------- Helpers ----------------
+    private const string EyYellow = "FFE600";
+    private const string EyFont = "EyInterstate Regular";
     private static MemoryStream BuildExcel(ExportExcelRequest req)
     {
-        var wb = new XLWorkbook();
+        using var wb = new XLWorkbook();
 
         BuildResumenSheet(wb, req);
         BuildDocumentSheets(wb, req);
@@ -86,8 +88,6 @@ public class ExportExcelFunction
         return stream;
     }
 
-
-
     private static void BuildResumenSheet(XLWorkbook wb, ExportExcelRequest req)
     {
         var ws = wb.Worksheets.Add("Resumen");
@@ -97,21 +97,16 @@ public class ExportExcelFunction
         // Header padre
         ws.Cell(1, 1).Value = "Información verificada";
         ws.Range(1, 1, 2, 1).Merge();
-        ws.Cell(1, 1).Style.Font.Bold = true;
-        ws.Cell(1, 1).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
 
         ws.Cell(1, 2).Value = "Número de muestra";
         ws.Range(1, 2, 1, 1 + samplesCount).Merge();
-        ws.Cell(1, 2).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-        ws.Cell(1, 2).Style.Font.Bold = true;
 
         // Header hijos (Muestra 1..N)
         for (int i = 0; i < samplesCount; i++)
         {
-            ws.Cell(2, 2 + i).Value = $"Muestra {req.Samples[i].SampleId}";
-            ws.Cell(2, 2 + i).Style.Font.Bold = true;
-            ws.Cell(2, 2 + i).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            ws.Cell(2, 2 + i).Value = $"{req.Samples[i].SampleId}";
         }
+
         var criteria = req.Samples.First().ValidationResults;
 
         var row = 3;
@@ -137,13 +132,22 @@ public class ExportExcelFunction
         }
 
         var used = ws.RangeUsed();
+        if (used is null) return;
+
+        ApplyBodyStyle(used);
+        ApplyHeaderStyle(ws.Range(1, 1, 2, 1 + samplesCount));
+
+        ws.Range(3, 1, row - 1, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Left;
+        ws.Range(3, 2, row - 1, 1 + samplesCount).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
         used.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
         used.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
-        used.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+
+        ws.SheetView.FreezeRows(2);
+        ws.SheetView.FreezeColumns(1);
 
         ws.Columns().AdjustToContents();
     }
-
 
 
     private static void BuildDocumentSheets(XLWorkbook wb, ExportExcelRequest req)
@@ -194,11 +198,35 @@ public class ExportExcelFunction
             }
 
             var used = ws.RangeUsed();
+            if (used is null) continue;
+            ApplyBodyStyle(used);
+            ApplyHeaderStyle(ws.Range(1, 1, 1, samples.Count + 1));
+
             used.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
             used.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
 
+            ws.SheetView.FreezeRows(1);
+            ws.SheetView.FreezeColumns(1);
+
             ws.Columns().AdjustToContents();
         }
+    }
+
+    private static void ApplyHeaderStyle(IXLRange range)
+    {
+        range.Style.Fill.BackgroundColor = XLColor.FromHtml($"#{EyYellow}");
+        range.Style.Font.FontName = EyFont;
+        range.Style.Font.Bold = true;
+        range.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        range.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+    }
+
+    private static void ApplyBodyStyle(IXLRange range)
+    {
+        range.Style.Font.FontName = EyFont;
+        range.Style.Font.Bold = false;
+        range.Style.Fill.BackgroundColor = XLColor.NoColor;
+        range.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
     }
 
     private async Task<string> SaveToBlobAsync(
@@ -235,7 +263,6 @@ public class ExportExcelFunction
 
     }
 
-
     private static string BuildFileName(
             string regulation,
             string tenant,
@@ -244,7 +271,6 @@ public class ExportExcelFunction
     {
         return $"{regulation.ToUpper()}_{tenant}_{personType}_{personSubType}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.xlsx";
     }
-
 
     private static HttpResponseData CreateError(
         HttpRequestData req,
