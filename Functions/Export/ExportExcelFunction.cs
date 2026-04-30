@@ -95,6 +95,19 @@ public class ExportExcelFunction
 
             }
 
+
+            // Azure Table Storage does not guarantee a deterministic order when querying entities.
+            // To ensure that sample numbering (Muestra 1, Muestra 2, etc.) is consistent across
+            // all Excel sheets (Resumen, DNI, CUL, etc.), we enforce a stable ordering here.
+            // The SampleId (GUID) is used as a canonical key so the same sample always maps
+            // to the same column index in every sheet.
+            enrichedSamples = enrichedSamples
+                .OrderBy(s => s.SampleId, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            request.Samples = enrichedSamples;
+
+
             var excelStream = BuildExcel(request);
 
             var blobUrl = await SaveToBlobAsync(
@@ -151,7 +164,7 @@ public class ExportExcelFunction
         // Header hijos (Muestra 1..N)
         for (int i = 0; i < samplesCount; i++)
         {
-            ws.Cell(2, 2 + i).Value = $"{req.Samples[i].SampleId}";
+            ws.Cell(2, 2 + i).Value = $"{i + 1}";
         }
 
         var criteria = req.Samples.First().ValidationResults;
@@ -215,7 +228,7 @@ public class ExportExcelFunction
 
             for (int s = 0; s < samples.Count; s++)
             {
-                ws.Cell(1, 2 + s).Value = $"Muestra {samples[s].SampleId}";
+                ws.Cell(1, 2 + s).Value = $"Muestra {s + 1}";
                 ws.Cell(1, 2 + s).Style.Font.Bold = true;
             }
 
