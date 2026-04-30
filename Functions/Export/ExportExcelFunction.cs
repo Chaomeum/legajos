@@ -55,8 +55,29 @@ public class ExportExcelFunction
                         request.PersonSubType);
 
             var legajosStorageConnectionString = _configuration["LegajosStorageConnectionString"];
-            var validationResultTable = new TableClient(legajosStorageConnectionString, "ValidationResults");
-            var sampleDocumentTable = new TableClient(legajosStorageConnectionString, "SampleDocuments");
+            var validationResultTable = new TableClient(
+                legajosStorageConnectionString,
+                "ValidationResults"
+            );
+            var sampleDocumentTable = new TableClient(
+                legajosStorageConnectionString,
+                "SampleDocuments"
+            );
+            var validationCriteriaTable = new TableClient(
+                legajosStorageConnectionString,
+                "ValidationCriteria"
+            );
+
+
+            var criteria = validationCriteriaTable
+                .Query<ValidationCriterionEntity>(c =>
+                    c.IsActive &&
+                    c.Phase == "Fase1" &&
+                    c.PartitionKey == $"{request.Regulation}|{request.PersonType}|{request.PersonSubType}|{request.Regime}"
+                )
+                .OrderBy(c => c.RowKey)
+                .ToList();
+
 
             var enrichedSamples = new List<ExportSample>();
             foreach (var sample in request.Samples)
@@ -108,7 +129,7 @@ public class ExportExcelFunction
             request.Samples = enrichedSamples;
 
 
-            var excelStream = BuildExcel(request);
+            var excelStream = BuildExcel(request, criteria);
 
             var blobUrl = await SaveToBlobAsync(
                 excelStream,
@@ -135,11 +156,11 @@ public class ExportExcelFunction
     // ---------------- Helpers ----------------
     private const string EyYellow = "FFE600";
     private const string EyFont = "EyInterstate Regular";
-    private static MemoryStream BuildExcel(ExportExcelRequest req)
+    private static MemoryStream BuildExcel(ExportExcelRequest req, List<ValidationCriterionEntity> criteria)
     {
         using var wb = new XLWorkbook();
 
-        BuildResumenSheet(wb, req);
+        BuildResumenSheet(wb, req, criteria);
         BuildDocumentSheets(wb, req);
 
         var stream = new MemoryStream();
@@ -148,7 +169,7 @@ public class ExportExcelFunction
         return stream;
     }
 
-    private static void BuildResumenSheet(XLWorkbook wb, ExportExcelRequest req)
+    private static void BuildResumenSheet(XLWorkbook wb, ExportExcelRequest req, List<ValidationCriterionEntity> criteria)
     {
         var ws = wb.Worksheets.Add("Resumen");
 
@@ -167,8 +188,6 @@ public class ExportExcelFunction
             ws.Cell(2, 2 + i).Value = $"{i + 1}";
         }
 
-        var criteria = req.Samples.First().ValidationResults;
-
         var row = 3;
         foreach (var criterion in criteria)
         {
@@ -178,7 +197,7 @@ public class ExportExcelFunction
             {
                 var sampleResult = req.Samples[s]
                     .ValidationResults
-                    .FirstOrDefault(r => r.CriterionId == criterion.CriterionId);
+                    .FirstOrDefault(r => r.CriterionId == criterion.RowKey);
 
                 ws.Cell(row, 2 + s).Value = sampleResult?.Status switch
                 {

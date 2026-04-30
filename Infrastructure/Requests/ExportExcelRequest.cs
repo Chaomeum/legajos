@@ -10,6 +10,7 @@ public class ExportExcelRequest
     public string Regulation { get; set; } = default!;
     public string PersonType { get; set; } = default!;
     public string PersonSubType { get; set; } = default!;
+    public string Regime { get; set; } = default!;
 
     public List<ExportSample> Samples { get; set; } = new();
 }
