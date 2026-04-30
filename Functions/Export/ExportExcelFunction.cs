@@ -100,7 +100,6 @@ public class ExportExcelFunction
                         .Select(v => new ValidationResult
                         {
                             CriterionId = v.CriterionId,
-                            Description = v.Observation == null ? string.Empty : v.Observation,
                             Status = v.Status,
                             Evidence = v.Evidence,
                             Observation = v.Observation
@@ -189,6 +188,7 @@ public class ExportExcelFunction
         }
 
         var row = 3;
+
         foreach (var criterion in criteria)
         {
             ws.Cell(row, 1).Value = criterion.Description;
