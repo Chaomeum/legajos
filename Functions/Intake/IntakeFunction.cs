@@ -73,6 +73,7 @@ public class IntakeFunction
 
             var configTableName = _configuration["ConfigMappingTableName"] ?? "ConfigMapping";
             var stateTableName = _configuration["DocumentStateTableName"] ?? "DocumentState";
+            var sampleDocumentsTableName = _configuration["SampleDocumentsTableName"] ?? "SampleDocuments";
             var docIntelEndpoint = _configuration["DocumentIntelligence:Endpoint"];
             var docIntelApiKey = _configuration["DocumentIntelligence:ApiKey"];
 
@@ -95,12 +96,26 @@ public class IntakeFunction
                 return badResponse;
             }
 
-            var configTableClient = new TableClient(legajosStorageConnectionString, configTableName);
-            var stateTableClient = new TableClient(legajosStorageConnectionString, stateTableName);
-
             // Create tables if not created
+            var configTableClient = new TableClient(
+                legajosStorageConnectionString,
+                configTableName
+            );
+
+            var stateTableClient = new TableClient(
+                legajosStorageConnectionString,
+                stateTableName
+            );
+
+            var sampleDocumentsTableClient = new TableClient(
+                legajosStorageConnectionString,
+                sampleDocumentsTableName
+            );
+
+
             await configTableClient.CreateIfNotExistsAsync();
             await stateTableClient.CreateIfNotExistsAsync();
+            await sampleDocumentsTableClient.CreateIfNotExistsAsync();
 
             // Get config using clientType and regulationScope
             var configResponse = await configTableClient.GetEntityIfExistsAsync<ConfigMappingEntity>(
@@ -271,6 +286,34 @@ public class IntakeFunction
             canonicalResult.RegulationScope = intakeRequest.RegulationScope;
             canonicalResult.Confidence = detectedConfidence;
             canonicalResult.DocumentType = detectedType;
+
+            if (!string.IsNullOrWhiteSpace(intakeRequest.CaseId) && !string.IsNullOrWhiteSpace(intakeRequest.SampleId))
+            {
+                var sampleDocument = new SampleDocumentEntity
+                {
+                    PartitionKey = intakeRequest.CaseId,
+                    RowKey = $"{intakeRequest.SampleId}|{detectedType}|{documentId}",
+
+                    CaseId = intakeRequest.CaseId,
+                    SampleId = intakeRequest.SampleId,
+
+                    DocumentType = detectedType,
+                    DocumentId = documentId,
+
+                    Status = "Extracted",
+                    CanonicalResult = JsonSerializer.Serialize(canonicalResult),
+
+                    ExtractionModelId = extractionModelId,
+                    Confidence = detectedConfidence,
+
+                    BlobPath = intakeRequest.BlobPath,
+                    FileName = intakeRequest.FileName,
+
+                    CreatedAt = DateTimeOffset.UtcNow
+                };
+
+                await sampleDocumentsTableClient.UpsertEntityAsync(sampleDocument);
+            }
 
             stateEntity.Status = "extracted";
             stateEntity.Message = $"Extraction completed with model '{extractionModelId}'";
