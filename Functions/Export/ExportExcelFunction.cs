@@ -1,6 +1,10 @@
 using System.Net;
 using System.Text.Json;
+using AF.Domain.Export;
+using AF.Domain.Documents;
+using AF.Domain.Validation;
 using AF.Infrastructure.Requests;
+using AF.Infrastructure.Storage;
 using ClosedXML.Excel;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
@@ -8,6 +12,8 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Azure.Data.Tables;
+
 
 namespace AF.Functions.Export;
 
@@ -47,6 +53,47 @@ public class ExportExcelFunction
                         request.TenantId,
                         request.PersonType,
                         request.PersonSubType);
+
+            var legajosStorageConnectionString = _configuration["LegajosStorageConnectionString"];
+            var validationResultTable = new TableClient(legajosStorageConnectionString, "ValidationResults");
+            var sampleDocumentTable = new TableClient(legajosStorageConnectionString, "SampleDocuments");
+
+            var enrichedSamples = new List<ExportSample>();
+            foreach (var sample in request.Samples)
+            {
+                var sampleId = sample.SampleId;
+
+                var documents = sampleDocumentTable
+                        .Query<SampleDocumentEntity>(d =>
+                            d.PartitionKey == request.CaseId &&
+                            d.SampleId == sampleId &&
+                            d.Status == "Extracted")
+                        .Select(d => JsonSerializer.Deserialize<CanonicalExtractionResult>(d.CanonicalResult))
+                        .Where(d => d != null!)
+                        .ToList()!;
+
+                var validationResults = validationResultTable
+                        .Query<ValidationResultEntity>(v =>
+                            v.PartitionKey == request.CaseId &&
+                            v.SampleId == sampleId)
+                        .Select(v => new ValidationResult
+                        {
+                            CriterionId = v.CriterionId,
+                            Description = v.Observation == null ? string.Empty : v.Observation,
+                            Status = v.Status,
+                            Evidence = v.Evidence,
+                            Observation = v.Observation
+                        })
+                        .ToList();
+
+                enrichedSamples.Add(new ExportSample
+                {
+                    SampleId = sampleId,
+                    ExtractedDocuments = documents,
+                    ValidationResults = validationResults
+                });
+
+            }
 
             var excelStream = BuildExcel(request);
 

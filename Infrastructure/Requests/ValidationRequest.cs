@@ -5,7 +5,7 @@ using AF.Domain.Documents;
 public class ValidationRequest
 {
     public string CaseId { get; set; } = default!;
-    public int SampleId { get; set; }
+    public string SampleId { get; set; } = default!;
 
     public string Regulation { get; set; } = default!;      // SBS, SMV
     public string PersonType { get; set; } = default!;      // Clientes

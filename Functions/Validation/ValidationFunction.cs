@@ -41,10 +41,14 @@ public class ValidationFunction
                 return Error(req, HttpStatusCode.BadRequest, "Invalid request.");
 
             var partitionKey = BuildPartitionKey(request);
-
+            var resultsTable = new TableClient(
+                _configuration["LegajosStorageConnectionString"],
+                "ValidationResults");
             var tableClient = new TableClient(
                 _configuration["LegajosStorageConnectionString"],
                 "ValidationCriteria");
+
+            await resultsTable.CreateIfNotExistsAsync();
 
             var criteria = tableClient
                 .Query<ValidationCriterionEntity>(c =>
@@ -60,6 +64,28 @@ public class ValidationFunction
                 var result = EvaluateCriterion(criterion, request.ExtractedDocuments);
                 results.Add(result);
             }
+
+            var now = DateTimeOffset.UtcNow;
+
+            foreach (var result in results)
+            {
+                var entity = new ValidationResultEntity
+                {
+                    PartitionKey = request.CaseId,
+                    RowKey = $"{request.SampleId}|{result.CriterionId}",
+                    CaseId = request.CaseId,
+                    SampleId = request.SampleId,
+                    CriterionId = result.CriterionId,
+                    Status = result.Status,
+                    Evidence = result.Evidence,
+                    Observation = result.Observation,
+
+                    ValidatedAt = now
+                };
+
+                await resultsTable.UpsertEntityAsync(entity);
+            }
+
 
             var response = req.CreateResponse(HttpStatusCode.OK);
             await response.WriteAsJsonAsync(new
