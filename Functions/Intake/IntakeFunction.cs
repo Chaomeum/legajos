@@ -118,14 +118,19 @@ public class IntakeFunction
             await sampleDocumentsTableClient.CreateIfNotExistsAsync();
 
             // Get config using clientType and regulationScope
+            var configMappingPK = intakeRequest.ClientType!.Trim().ToLowerInvariant();
+            var configMappingRK = $"{intakeRequest.RegulationScope}|{intakeRequest.PersonType}|{intakeRequest.PersonSubType}|{intakeRequest.Regime}".Trim().ToLowerInvariant();
+
             var configResponse = await configTableClient.GetEntityIfExistsAsync<ConfigMappingEntity>(
-                intakeRequest.ClientType.Trim().ToLower(),
-                intakeRequest.RegulationScope.Trim().ToLower());
+                configMappingPK,
+                configMappingRK
+                );
+
 
             if (!configResponse.HasValue || configResponse.Value is null)
             {
                 var badResponse = req.CreateResponse(HttpStatusCode.NotFound);
-                await badResponse.WriteStringAsync("No config mapping found for clientType '{intakeRequest.ClientType}' and regulationScope '{intakeRequest.RegulationScope}'.");
+                await badResponse.WriteStringAsync("No config mapping found for clientType '{configMappingPK}' and regulationScope '{configMappingRK}'.");
                 return badResponse;
             }
 
