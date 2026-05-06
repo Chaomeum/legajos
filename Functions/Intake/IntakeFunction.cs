@@ -1,4 +1,6 @@
+using AF.Application.Samples;
 using AF.Domain.Documents;
+using AF.Domain.Samples;
 using AF.Infrastructure.Requests;
 using AF.Infrastructure.Storage;
 using Azure;
@@ -34,6 +36,13 @@ public class IntakeFunction
         [HttpTrigger(AuthorizationLevel.Function, "post")] HttpRequestData req
         )
     {
+
+        /** CorrelationId sirve para diferenciar traces, logs por cada retry
+        *   a diferencia de CaseId y SampleId, no se relaciona con identificadores
+        *   propios del negocio
+        */
+        var correlationId = GetCorrelationId(req);
+        var startedAt = DateTimeOffset.UtcNow;
         try
         {
             var requestBody = await new StreamReader(req.Body).ReadToEndAsync();
@@ -44,10 +53,7 @@ public class IntakeFunction
                 return badResponse;
             }
 
-            var intakeRequest = JsonSerializer.Deserialize<IntakeRequest>(requestBody, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            var intakeRequest = JsonSerializer.Deserialize<IntakeRequest>(requestBody, _jsonOptions);
 
             if (intakeRequest is null)
             {
@@ -55,7 +61,6 @@ public class IntakeFunction
                 await badResponse.WriteStringAsync("Invalid JSON payload");
                 return badResponse;
             }
-
 
             if (string.IsNullOrWhiteSpace(intakeRequest.FileUrl) ||
                 string.IsNullOrWhiteSpace(intakeRequest.FileName) ||
@@ -67,12 +72,15 @@ public class IntakeFunction
                 return badResponse;
             }
 
+            var caseId = intakeRequest.CaseId;
+            var sampleId = intakeRequest.SampleId;
 
             var storageConnectionString = _configuration["AzureWebJobsStorage"];
             var legajosStorageConnectionString = _configuration["LegajosStorageConnectionString"];
 
             var configTableName = _configuration["ConfigMappingTableName"] ?? "ConfigMapping";
             var stateTableName = _configuration["DocumentStateTableName"] ?? "DocumentState";
+            var samplesTableName = _configuration["SamplesTableName"] ?? "Samples";
             var sampleDocumentsTableName = _configuration["SampleDocumentsTableName"] ?? "SampleDocuments";
             var docIntelEndpoint = _configuration["DocumentIntelligence:Endpoint"];
             var docIntelApiKey = _configuration["DocumentIntelligence:ApiKey"];
@@ -112,12 +120,18 @@ public class IntakeFunction
                 sampleDocumentsTableName
             );
 
+            var samplesTableClient = new TableClient(
+                legajosStorageConnectionString,
+                samplesTableName
+            );
+
 
             await configTableClient.CreateIfNotExistsAsync();
             await stateTableClient.CreateIfNotExistsAsync();
+            await samplesTableClient.CreateIfNotExistsAsync();
             await sampleDocumentsTableClient.CreateIfNotExistsAsync();
 
-            // Get config using clientType and regulationScope
+            // Get config using clientType as PK and regulationScope|personType|personSubType|regime as RK
             var configMappingPK = intakeRequest.ClientType!.Trim().ToLowerInvariant();
             var configMappingRK = $"{intakeRequest.RegulationScope}|{intakeRequest.PersonType}|{intakeRequest.PersonSubType}|{intakeRequest.Regime}".Trim().ToLowerInvariant();
 
@@ -130,7 +144,11 @@ public class IntakeFunction
             if (!configResponse.HasValue || configResponse.Value is null)
             {
                 var badResponse = req.CreateResponse(HttpStatusCode.NotFound);
-                await badResponse.WriteStringAsync("No config mapping found for clientType '{configMappingPK}' and regulationScope '{configMappingRK}'.");
+                await badResponse.WriteAsJsonAsync(new
+                {
+                    correlationId,
+                    error = "No config mapping found for '{configMappingPK} and {configMappingRK}"
+                });
                 return badResponse;
             }
 
@@ -139,7 +157,11 @@ public class IntakeFunction
             if (!config.IsActive)
             {
                 var badResponse = req.CreateResponse(HttpStatusCode.Conflict);
-                await badResponse.WriteStringAsync("Config mapping for clientType '{intakeRequest.ClientType}' and regulationScope '{intakeRequest.RegulationScope}' is inactive.");
+                await badResponse.WriteAsJsonAsync(new
+                {
+                    correlationId,
+                    error = "Config mapping for '{configMappingPK}' and '{configMappingRK}' is inactive"
+                });
                 return badResponse;
             }
 
@@ -147,15 +169,39 @@ public class IntakeFunction
             {
                 _logger.LogInformation("Config mapping does not contain a ClassifierId. ");
                 var badResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
-                await badResponse.WriteStringAsync("Config mapping does not contain a ClassifierId.");
+                await badResponse.WriteAsJsonAsync(new
+                {
+                    correlationId,
+                    error = "Config mapping does not contain a ClassifierId."
+                });
                 return badResponse;
             }
 
-            // Simple parse to get the allowed models
+            var sampleStateService = new SampleStateService();
+            var sampleStateApplicationService = new SampleStateApplicationService(
+                new TableSampleRepository(samplesTableClient),
+                sampleStateService
+            );
+            var expectedDocumentTypes = sampleStateService.ParseRequiredDocumentFamilies(config.RequiredDocumentFamilies);
+
+            if (expectedDocumentTypes.Count == 0)
+            {
+                _logger.LogInformation("Config mapping does not contain valid RequiredDocumentFamilies. CorrelationId={CorrelationId} CaseId={CaseId} SampleId={SampleId}",
+                correlationId, caseId, sampleId);
+
+                var badResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+                await badResponse.WriteAsJsonAsync(new
+                {
+                    correlationId,
+                    error = "Config mapping does not contain valid RequiredDocumentFamilies"
+                });
+                return badResponse;
+            }
+
             var extractionModelMap = ParseModelMap(config.ExtractionModelMapJson);
             if (extractionModelMap.Count == 0)
             {
-                _logger.LogInformation("Config mapping does not contain a valid extraction model map. ");
+                _logger.LogInformation("Config mapping does not contain a valid extraction model map.");
                 var badResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
                 await badResponse.WriteStringAsync("Config mapping does not contain a valid extraction model map.");
                 return badResponse;
@@ -235,6 +281,7 @@ public class IntakeFunction
                 var lowConfidenceResponse = req.CreateResponse(HttpStatusCode.OK);
                 await lowConfidenceResponse.WriteAsJsonAsync(new
                 {
+                    correlationId,
                     message = "Classification completed, but confidence is below threshold",
                     documentId,
                     tenantId,
@@ -256,6 +303,7 @@ public class IntakeFunction
                 var unmappedResponse = req.CreateResponse(HttpStatusCode.OK);
                 await unmappedResponse.WriteAsJsonAsync(new
                 {
+                    correlationId,
                     message = "Classification completed, but detected type is not mapped to an extraction model.",
                     documentId,
                     tenantId,
@@ -292,34 +340,43 @@ public class IntakeFunction
             canonicalResult.Confidence = detectedConfidence;
             canonicalResult.DocumentType = detectedType;
 
-            if (!string.IsNullOrWhiteSpace(intakeRequest.CaseId) && !string.IsNullOrWhiteSpace(intakeRequest.SampleId))
+            var sampleDocument = new SampleDocumentEntity
             {
-                var sampleDocument = new SampleDocumentEntity
-                {
-                    PartitionKey = intakeRequest.CaseId,
-                    RowKey = $"{intakeRequest.SampleId}|{detectedType}|{documentId}",
+                PartitionKey = caseId,
+                RowKey = $"{sampleId}|{detectedType}|{documentId}",
 
-                    CaseId = intakeRequest.CaseId,
-                    SampleId = intakeRequest.SampleId,
+                CaseId = caseId,
+                SampleId = sampleId,
 
-                    DocumentType = detectedType,
-                    DocumentId = documentId,
+                DocumentType = detectedType,
+                DocumentId = documentId,
 
-                    Status = "Extracted",
-                    CanonicalResult = JsonSerializer.Serialize(canonicalResult),
+                Status = "Extracted",
+                CanonicalResult = JsonSerializer.Serialize(canonicalResult),
 
-                    ExtractionModelId = extractionModelId,
-                    Confidence = detectedConfidence,
+                ExtractionModelId = extractionModelId,
+                Confidence = detectedConfidence,
 
-                    BlobPath = intakeRequest.BlobPath,
-                    FileName = intakeRequest.FileName,
+                BlobPath = intakeRequest.BlobPath,
+                FileName = intakeRequest.FileName,
 
-                    CreatedAt = DateTimeOffset.UtcNow
-                };
+                CreatedAt = DateTimeOffset.UtcNow
+            };
 
-                await sampleDocumentsTableClient.UpsertEntityAsync(sampleDocument);
-            }
+            await sampleDocumentsTableClient.UpsertEntityAsync(sampleDocument);
 
+            var sampleState = await sampleStateApplicationService.RegisterReceivedDocumentAsync(
+                new SampleStateUpdateCommand(
+                    caseId,
+                    sampleId,
+                    config.RequiredDocumentFamilies ?? string.Empty,
+                    detectedType,
+                    intakeRequest.PersonType,
+                    intakeRequest.PersonSubType,
+                    intakeRequest.Regime,
+                    intakeRequest.RegulationScope
+                )
+            );
             stateEntity.Status = "extracted";
             stateEntity.Message = $"Extraction completed with model '{extractionModelId}'";
             stateEntity.UpdatedAt = DateTimeOffset.UtcNow;
@@ -329,7 +386,10 @@ public class IntakeFunction
             var okResponse = req.CreateResponse(HttpStatusCode.OK);
             await okResponse.WriteAsJsonAsync(new
             {
+                correlationId,
                 message = "Classification completed successfully",
+                caseId,
+                sampleId,
                 documentId,
                 tenantId,
                 fileName = intakeRequest.FileName,
@@ -339,6 +399,9 @@ public class IntakeFunction
                 classifierId = config.ClassifierId,
                 detectedType,
                 detectedConfidence,
+                sampleStatus = sampleState.SampleStatus,
+                expectedDocumentTypes = sampleState.ExpectedDocumentTypes,
+                receivedDocumentTypes = sampleState.ReceivedDocumentTypes,
                 extractionModelId,
                 canonicalResult
             });
@@ -351,8 +414,8 @@ public class IntakeFunction
             var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
             await errorResponse.WriteAsJsonAsync(new
             {
+                correlationId,
                 error = exception.Message,
-                stackTrace = exception.StackTrace
             });
             return errorResponse;
         }
@@ -413,4 +476,20 @@ public class IntakeFunction
         var safeName = fileName.Replace(" ", "_");
         return $"{DateTime.UtcNow:yyyyMMddHHmmssfff}_{safeName}";
     }
+
+    private static string GetCorrelationId(HttpRequestData req)
+    {
+        if (req.Headers.TryGetValues("x-correlation-id", out var values))
+        {
+            var correlationId = values.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(correlationId))
+                return correlationId;
+        }
+        return Guid.NewGuid().ToString("N");
+    }
+
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 }
